@@ -1,0 +1,256 @@
+{
+  "name": "stAirCase v1.0 — AI Workspace Orchestrator",
+  "description": "Bash CLI that orchestrates product repos <-> AI context repos for ralph-tui and agentic workflows, with atomic JSON state, jq-based manifest management, optional symlinks, dual hooks system, and cross-platform portability.",
+  "branchName": "ralph/staircase-v1",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Colored output, --dry-run, and environment flags",
+      "description": "As a developer, I want all staircase commands to support --dry-run and produce consistent colored output so that I can understand and audit actions before they run.",
+      "acceptanceCriteria": [
+        "Color helpers: _info (cyan →), _ok (green ✔), _warn (yellow ⚠), _err (red ✖) — all write to stderr",
+        "NO_COLOR=1 disables all ANSI codes (CI-safe)",
+        "STAIRCASE_DEBUG=1 enables xtrace-style command logging",
+        "--dry-run is parsed globally and respected by every command that writes state",
+        "--dry-run outputs a [DRY RUN] prefix on every action that would be taken",
+        "--version prints staircase 1.0.0",
+        "--help prints usage with all commands and flags",
+        "bats test: NO_COLOR suppresses ANSI, --version prints version, --help prints usage, unknown commands exit 1"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": []
+    },
+    {
+      "id": "US-002",
+      "title": "Workspace init",
+      "description": "As a developer, I want to run `staircase init` in any directory so that the workspace scaffolding is created safely and idempotently.",
+      "acceptanceCriteria": [
+        "Creates product/, agent/, .staircase/tmp/ directories",
+        "Creates .staircase/manifest.json with {\"version\":\"1.0\",\"projects\":{}} if not present",
+        "Re-running staircase init is a no-op (no error, no data loss)",
+        "Outputs ✔ initialized or ✔ already initialized",
+        "--dry-run prints what would be created without touching disk",
+        "All output goes to stderr; stdout is clean",
+        "bats test: init on empty dir, idempotent re-init, manifest schema, stderr-only output"
+      ],
+      "priority": 2,
+      "passes": true,
+      "dependsOn": ["US-001"]
+    },
+    {
+      "id": "US-003",
+      "title": "Register a project",
+      "description": "As a developer, I want to run `staircase register <app> [--symlink]` so that an existing product repo is wired to a new agent context directory.",
+      "acceptanceCriteria": [
+        "Creates product/<app>/ and agent/<app>/active/, agent/<app>/tasks/, agent/<app>/structure/",
+        "Adds entry to .staircase/manifest.json via atomic write (mktemp + mv)",
+        "jq is used for all manifest reads and writes — no string-concat JSON",
+        "--symlink flag creates product/<app>/tasks → ../../agent/<app>/active and sets symlinkEnabled: true",
+        "Errors if <app> is already registered (exit 1)",
+        "Errors if run outside a workspace (exit 1)",
+        "bats test: register new app, duplicate (exit 1), missing name (exit 1), outside workspace (exit 1), --symlink creates link + manifest flag"
+      ],
+      "priority": 3,
+      "passes": true,
+      "dependsOn": ["US-002"]
+    },
+    {
+      "id": "US-004",
+      "title": "Create a new task",
+      "description": "As a developer, I want to run `staircase task new <app> <task-id>` so that a task context is created and set as the active task.",
+      "acceptanceCriteria": [
+        "Creates agent/<app>/tasks/<task-id>/ directory",
+        "Writes agent/<app>/active/context.json via jq -n (safe with special characters in task IDs)",
+        "context.json schema: { taskId, app, created (ISO-8601), stories: [], files: [], gitDiff: \"\" }",
+        "Updates manifest.json activeTask field atomically",
+        "Refreshes symlink if enabled for the app",
+        "Errors if <app> is not registered (exit 1)",
+        "bats test: create on registered app, schema validation, unregistered app (exit 1), special chars in task ID, symlink refresh"
+      ],
+      "priority": 4,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-005",
+      "title": "Switch active task",
+      "description": "As a developer, I want to run `staircase task switch <app> <task-id> [--symlink]` so that I can atomically rotate between existing tasks.",
+      "acceptanceCriteria": [
+        "Saves current active/context.json to tasks/<previousTaskId>/context.json",
+        "Copies tasks/<task-id>/context.json → active/context.json atomically",
+        "Updates manifest.json activeTask to <task-id>",
+        "--symlink flag enables symlink mode one-shot (persisted in manifest)",
+        "Refreshes existing symlink if enabled",
+        "Errors if <task-id> directory does not exist (exit 1 + suggestion)",
+        "bats test: switch between tasks, context saved/restored, non-existent task (exit 1), --symlink one-shot, symlink refresh"
+      ],
+      "priority": 5,
+      "passes": true,
+      "dependsOn": ["US-004"]
+    },
+    {
+      "id": "US-006",
+      "title": "List tasks",
+      "description": "As a developer, I want to run `staircase task list <app>` so that I can see all tasks for an app with the active one marked.",
+      "acceptanceCriteria": [
+        "Lists all task directories under agent/<app>/tasks/",
+        "Active task marked with *",
+        "Shows last-modified timestamp per task",
+        "Errors if <app> is not registered (exit 1)",
+        "bats test: all tasks shown, active marker, unregistered app (exit 1), empty tasks dir"
+      ],
+      "priority": 6,
+      "passes": true,
+      "dependsOn": ["US-004"]
+    },
+    {
+      "id": "US-007",
+      "title": "Symlink management",
+      "description": "As a developer, I want to manage symlinks between product and agent directories so that tools can read context directly from product repos.",
+      "acceptanceCriteria": [
+        "staircase symlink enable <app> creates relative symlink product/<app>/tasks → ../../agent/<app>/active",
+        "staircase symlink disable <app> removes symlink and clears manifest flag",
+        "staircase symlink status shows table with enabled state, link health, and resolved target",
+        "Symlinks auto-refresh on task new and task switch for enabled apps",
+        "Idempotent — enable on already-enabled exits 0, disable on already-disabled exits 0",
+        "Fails if product/<app>/tasks is a real directory",
+        "doctor detects missing/broken symlinks; doctor --fix repairs them",
+        "bats test: enable/disable/status, idempotent, readable through symlink, real dir blocks, switch cycle survival"
+      ],
+      "priority": 7,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-008",
+      "title": "Run ralph-tui for a project",
+      "description": "As a developer, I want to run `staircase run <app>` so that ralph-tui launches in the correct product directory with the active context injected.",
+      "acceptanceCriteria": [
+        "Changes into product/<app>/ before launching",
+        "Launches ralph-tui --prd ../agent/<app>/active/context.json as a child process (not exec)",
+        "--agent-config '<json>' merges config into context.json before launch",
+        "Runs hooks.d/99-ralph-tui.sh after ralph-tui exits",
+        "Errors if product dir or context.json missing (exit 1 with hints)",
+        "--dry-run prints resolved command without executing",
+        "bats test: missing product (exit 1), missing context (exit 1), dry-run, dry-run with --agent-config"
+      ],
+      "priority": 8,
+      "passes": true,
+      "dependsOn": ["US-004"]
+    },
+    {
+      "id": "US-009",
+      "title": "Workspace inspection (ls + status)",
+      "description": "As a developer, I want `staircase ls` and `staircase status` to show workspace state at a glance.",
+      "acceptanceCriteria": [
+        "ls prints tree view: root, app names (bold/cyan), product paths, agent paths, task count, active task (green), symlink state",
+        "ls shows missing product paths in red without crashing",
+        "status prints table: APP, PRODUCT PATH, ACTIVE TASK, LAST MODIFIED",
+        "status --json outputs full manifest as pretty-printed JSON",
+        "Both exit 0 with zero registered projects",
+        "bats test: ls tree/apps/tasks/symlink, status table/json, no workspace handling"
+      ],
+      "priority": 9,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-010",
+      "title": "Doctor command (self-healing)",
+      "description": "As a developer or CI system, I want `staircase doctor [--fix]` to detect and repair broken workspace state.",
+      "acceptanceCriteria": [
+        "Check 1: manifest.json exists and is valid JSON (fix: recreate empty manifest)",
+        "Check 2: registered apps have product/ and agent/ paths (fix: deregister)",
+        "Check 3: apps with activeTask have active/context.json (fix: create empty)",
+        "Check 4: .staircase/tmp/ exists and is writable (fix: create it)",
+        "Check 5: orphaned agent/ directories not in manifest (report)",
+        "Check 6: apps with symlinkEnabled have valid symlinks (fix: recreate)",
+        "--fix applies all repairs; without it, only reports",
+        "Exits 0 if healthy; exits 1 if issues remain",
+        "bats test: healthy, missing tmp, invalid manifest, missing paths, orphans, broken symlinks, multi-issue repair"
+      ],
+      "priority": 10,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-011",
+      "title": "Export command",
+      "description": "As a developer, I want `staircase export <app> [--format json|tar]` to back up or migrate agent context.",
+      "acceptanceCriteria": [
+        "Default --format json: writes manifest + active context + all saved tasks to stdout",
+        "--format tar: creates staircase-export-<app>-<date>.tar.gz",
+        "JSON includes app, exported_at, manifest, agent.active, agent.tasks",
+        "Errors if <app> is not registered (exit 1)",
+        "--dry-run prints what would be exported without writing",
+        "bats test: json valid, active context, saved tasks, tar creates file, unknown app (exit 1), dry-run"
+      ],
+      "priority": 11,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-012",
+      "title": "Git hooks install",
+      "description": "As a developer, I want `staircase hooks install <app>` to wire up Git hooks and lifecycle hooks.",
+      "acceptanceCriteria": [
+        "Creates hooks.d/ with stubs: 01-format.sh, 99-ralph-tui.sh",
+        "Installs pre-commit hook running hooks.d/01-format.sh",
+        "Installs post-merge hook running staircase doctor --fix silently",
+        "Stubs and git hooks are executable",
+        "Existing hooks preserved — stAirCase guard block appended",
+        "Idempotent — guard block appears exactly once after multiple installs",
+        "Requires product/<app>/.git to exist",
+        "bats test: creates hooks, executable, idempotent guard, preserves existing, no git repo (exit 1)"
+      ],
+      "priority": 12,
+      "passes": true,
+      "dependsOn": ["US-003"]
+    },
+    {
+      "id": "US-013",
+      "title": "Explain command",
+      "description": "As a developer, I want `staircase explain <command> [args]` to preview what a command would do as a structured diff.",
+      "acceptanceCriteria": [
+        "Shows filesystem changes (created dirs, modified files)",
+        "Shows manifest JSON diff (before → after)",
+        "Shows context.json preview for task commands",
+        "Does not modify workspace state",
+        "Supports: init, register, task new, task switch",
+        "Exits 1 for unsupported commands",
+        "bats test: explain init/register/task new/task switch, no workspace mutation, missing args (exit 1)"
+      ],
+      "priority": 13,
+      "passes": true,
+      "dependsOn": ["US-002"]
+    },
+    {
+      "id": "US-014",
+      "title": "Repository structure and CI",
+      "description": "As a contributor, I want the repository to have tests, CI, and a demo workspace so that the project is shippable.",
+      "acceptanceCriteria": [
+        "tests/integration.bats — 122 tests covering all commands (happy + error paths)",
+        ".github/workflows/ci.yml runs shellcheck and bats on push/PR",
+        "examples/demo-workspace/README.md — interactive walkthrough covering all features",
+        "README.md — developer-friendly documentation",
+        "CHANGELOG.md — single 1.0.0 release",
+        "LICENSE — MIT license (Copyright Botond Biro)",
+        "--version prints staircase 1.0.0"
+      ],
+      "priority": 14,
+      "passes": true,
+      "dependsOn": [
+        "US-001", "US-002", "US-003", "US-004", "US-005", "US-006",
+        "US-007", "US-008", "US-009", "US-010", "US-011", "US-012", "US-013"
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "1.0.0",
+    "license": "MIT",
+    "repository": "https://github.com/b070nd/staircase",
+    "testCount": 122,
+    "updatedAt": "2026-03-09T00:00:00Z"
+  }
+}
